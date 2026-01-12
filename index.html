@@ -19,9 +19,9 @@
   </style>
 </head>
 <body>
-  <h2>获取验证码</h2>
+  <h2>Outlook IMAP：全部验证码 + 时间列表</h2>
 
-  <p class="muted">输入格式：完整内容</code></p>
+  <p class="muted">输入格式：<code>email----任意----client_id----refresh_token</code></p>
   <textarea id="line" spellcheck="false"></textarea>
 
   <div class="row">
@@ -103,7 +103,7 @@
       `;
     }
 
-    $('btn')。addEventListener('click', async () => {
+    $('btn').addEventListener('click', async () => {
       setErr('');
       $('result').innerHTML = '';
 
