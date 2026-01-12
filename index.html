@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Outlook IMAP 验证码获取</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Arial;max-width:900px;margin:40px auto;padding:0 16px;}
+    textarea{width:100%;height:120px;font-size:14px;padding:12px;}
+    button{padding:10px 14px;font-size:14px;cursor:pointer;}
+    pre{background:#111;color:#0f0;padding:12px;overflow:auto;white-space:pre-wrap;word-break:break-word;}
+    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0;}
+    input{padding:8px 10px;font-size:14px;width:120px;}
+    label{font-size:14px;}
+  </style>
+</head>
+<body>
+  <h2>Outlook IMAP 验证码获取（XOAUTH2）</h2>
+
+  <p>输入格式（四段用 <code>----</code> 分隔）：</p>
+  <pre>email----任意占位----client_id----refresh_token</pre>
+
+  <textarea id="line" spellcheck="false"></textarea>
+
+  <div class="row">
+    <label>最多等待(秒)： <input id="timeoutSec" type="number" value="300" min="10" max="1800"></label>
+    <label>轮询间隔(秒)： <input id="intervalSec" type="number" value="5" min="2" max="60"></label>
+    <button id="btn">获取验证码</button>
+  </div>
+
+  <h3>结果</h3>
+  <pre id="out">尚未请求</pre>
+
+  <script>
+    const out = (v) => document.getElementById('out').textContent = v;
+
+    function parseLine(s){
+      const parts = s.split('----').map(x => x.trim());
+      if (parts.length < 4) throw new 错误('格式不对：需要 4 段，用 ---- 分隔');
+      return {
+        email: parts[0],
+        client_id: parts[2],
+        refresh_token: parts.slice(3).join('----') // 防止 token 里也出现 ----
+      };
+    }
+
+    document.getElementById('btn').addEventListener('click', async () => {
+      try{
+        out('请求中...');
+        const line = document.getElementById('line').value.trim();
+        const {email, client_id, refresh_token} = parseLine(line);
+        const timeoutSec = Number(document.getElementById('timeoutSec').value || 300);
+        const intervalSec = Number(document.getElementById('intervalSec').value || 5);
+
+        const resp = await fetch('/api/get-code', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ email, client_id, refresh_token, timeoutSec, intervalSec })
+        });
+
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          out(`HTTP ${resp.status}\n` + JSON.stringify(data, null, 2));
+          return;
+        }
+        out(JSON.stringify(data, null, 2));
+      }catch(e){
+        out('错误：' + (e && e.message ? e.message : String(e)));
+      }
+    });
+  </script>
+</body>
+</html>
