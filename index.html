@@ -3,40 +3,43 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Outlook IMAP 验证码获取</title>
+  <title>Outlook IMAP 邮件列表（sendcode@...）</title>
   <style>
-    body{font-family:system-ui,Segoe UI,Arial;max-width:900px;margin:40px auto;padding:0 16px;}
+    body{font-family:system-ui,Segoe UI,Arial;max-width:980px;margin:40px auto;padding:0 16px;}
     textarea{width:100%;height:120px;font-size:14px;padding:12px;}
     button{padding:10px 14px;font-size:14px;cursor:pointer;}
     pre{background:#111;color:#0f0;padding:12px;overflow:auto;white-space:pre-wrap;word-break:break-word;}
     .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0;}
-    input{padding:8px 10px;font-size:14px;width:120px;}
+    input{padding:8px 10px;font-size:14px;width:140px;}
     label{font-size:14px;}
+    table{width:100%;border-collapse:collapse;margin-top:12px;}
+    th,td{border:1px solid #ddd;padding:8px;font-size:13px;vertical-align:top;}
+    th{background:#f5f5f5;text-align:left;}
+    .muted{color:#666;font-size:13px;}
   </style>
 </head>
 <body>
-  <h2>Outlook IMAP 验证码获取（XOAUTH2）</h2>
+  <h2>Outlook IMAP：列出所有 sendcode@alphasmtp.verifycode.link 邮件</h2>
 
-  <p>输入格式（四段用 <code>----</code> 分隔）：</p>
+  <p class="muted">输入格式（四段用 <code>----</code> 分隔）：</p>
   <pre>email----任意占位----client_id----refresh_token</pre>
 
   <textarea id="line" spellcheck="false"></textarea>
 
   <div class="row">
-    <label>最多等待(秒)： <input id="timeoutSec" type="number" value="300" min="10" max="1800"></label>
-    <label>轮询间隔(秒)： <input id="intervalSec" type="number" value="5" min="2" max="60"></label>
-    <button id="btn">获取验证码</button>
+    <label>每个文件夹最多扫描(封)： <input id="maxPerBox" type="number" value="200" min="10" max="2000"></label>
+    <button id="btn">获取邮件列表</button>
   </div>
 
-  <h3>结果</h3>
-  <pre id="out">尚未请求</pre>
+  <div id="result"></div>
+  <pre id="raw">尚未请求</pre>
 
   <script>
-    const out = (v) => document.getElementById('out').textContent = v;
+    const raw = (v) => document.getElementById('raw').textContent = v;
 
     function parseLine(s){
       const parts = s.split('----').map(x => x.trim());
-      if (parts.length < 4) throw new 错误('格式不对：需要 4 段，用 ---- 分隔');
+      if (parts.length < 4) throw new Error('格式不对：需要 4 段，用 ---- 分隔');
       return {
         email: parts[0],
         client_id: parts[2],
@@ -44,28 +47,69 @@
       };
     }
 
+    function renderTable(mails){
+      const container = document.getElementById('result');
+      if (!mails || !mails.length){
+        container.innerHTML = '<p class="muted">没有匹配到邮件</p>';
+        return;
+      }
+      const rows = mails.map(m => `
+        <tr>
+          <td>${m.sentAt ? new Date(m.sentAt).toLocaleString() : ''}</td>
+          <td>${m.mailbox || ''}</td>
+          <td>${escapeHtml(m.from || '')}</td>
+          <td>${escapeHtml(m.subject || '')}</td>
+        </tr>
+      `).join('');
+
+      container.innerHTML = `
+        <p class="muted">共 ${mails.length} 封（按时间倒序）</p>
+        <table>
+          <thead>
+            <tr>
+              <th style="width:180px;">发送时间</th>
+              <th style="width:80px;">邮箱</th>
+              <th style="width:320px;">From</th>
+              <th>Subject</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    function escapeHtml(s){
+      return String(s).replace(/[&<>"']/g, (c) => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+      }[c]));
+    }
+
     document.getElementById('btn').addEventListener('click', async () => {
       try{
-        out('请求中...');
+        raw('请求中...');
+        document.getElementById('result').innerHTML = '';
+
         const line = document.getElementById('line').value.trim();
         const {email, client_id, refresh_token} = parseLine(line);
-        const timeoutSec = Number(document.getElementById('timeoutSec').value || 300);
-        const intervalSec = Number(document.getElementById('intervalSec').value || 5);
+        const maxPerBox = Number(document.getElementById('maxPerBox').value || 200);
 
         const resp = await fetch('/api/get-code', {
           method: 'POST',
           headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ email, client_id, refresh_token, timeoutSec, intervalSec })
+          body: JSON.stringify({ email, client_id, refresh_token, maxPerBox })
         });
 
         const data = await resp.json().catch(() => ({}));
+
         if (!resp.ok) {
-          out(`HTTP ${resp.status}\n` + JSON.stringify(data, null, 2));
+          raw(`HTTP ${resp.status}\n` + JSON.stringify(data, null, 2));
           return;
         }
-        out(JSON.stringify(data, null, 2));
+
+        raw(JSON.stringify(data, null, 2));
+        renderTable(data.mails || []);
       }catch(e){
-        out('错误：' + (e && e.message ? e.message : String(e)));
+        raw('错误：' + (e && e.message ? e.message : String(e)));
       }
     });
   </script>
