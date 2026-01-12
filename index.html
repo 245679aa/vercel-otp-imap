@@ -3,17 +3,19 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Outlook 验证码</title>
+  <title>Outlook 验证码列表</title>
   <style>
-    body{font-family:system-ui,Segoe UI,Arial;max-width:900px;margin:40px auto;padding:0 16px;}
+    body{font-family:system-ui,Segoe UI,Arial;max-width:980px;margin:40px auto;padding:0 16px;}
     textarea{width:100%;height:110px;font-size:14px;padding:12px;}
     button{padding:10px 14px;font-size:14px;cursor:pointer;}
     .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0;}
     input{padding:8px 10px;font-size:14px;width:140px;}
-    .card{border:1px solid #ddd;border-radius:10px;padding:16px;margin-top:16px;}
-    .big{font-size:34px;font-weight:700;letter-spacing:2px;}
-    .muted{color:#666;font-size:13px;margin-top:6px;}
-    .err{color:#b00020;white-space:pre-wrap;word-break:break-word;}
+    .muted{color:#666;font-size:13px;}
+    .err{color:#b00020;white-space:pre-wrap;word-break:break-word;margin-top:10px;}
+    table{width:100%;border-collapse:collapse;margin-top:14px;}
+    th,td{border:1px solid #ddd;padding:8px;font-size:13px;vertical-align:top;}
+    th{background:#f5f5f5;text-align:left;}
+    .pill{display:inline-block;padding:2px 8px;border:1px solid #ddd;border-radius:999px;font-size:12px;}
   </style>
 </head>
 <body>
@@ -26,22 +28,17 @@
     <label>每个文件夹最多扫描：
       <input id="maxPerBox" type="number" value="100" min="10" max="2000">
     </label>
-    <button id="btn">获取最新验证码</button>
+    <button id="btn">获取列表</button>
+    <span id="status" class="muted">尚未请求</span>
   </div>
 
-  <div id="box" class="card" style="display:none;">
-    <div id="code" class="big"></div>
-    <div id="time" class="muted"></div>
-  </div>
-
-  <div id="status" class="muted">尚未请求</div>
   <div id="error" class="err"></div>
+  <div id="result"></div>
 
   <script>
     const $ = (id) => document.getElementById(id);
     const setStatus = (t) => $('status').textContent = t;
     const setErr = (t) => $('error').textContent = t || '';
-    const showBox = (show) => $('box').style.display = show ? '' : 'none';
 
     function parseLine(s){
       const parts = s.split('----').map(x => x.trim());
@@ -53,7 +50,12 @@
       };
     }
 
-    // 让“点了没反应”这种情况变得可见：加一个前端超时
+    function escapeHtml(s){
+      return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+      }[c]));
+    }
+
     async function fetchWithTimeout(url, options, timeoutMs=25000){
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -64,9 +66,46 @@
       }
     }
 
-    $('btn').addEventListener('click', async () => {
+    function renderTable(items){
+      const container = $('result');
+      if (!Array.isArray(items) || items.length === 0) {
+        container.innerHTML = '<p class="muted">没有匹配到验证码邮件</p>';
+        return;
+      }
+
+      // items: [{sentAt, code}, ...]（后端已按时间倒序最好；这里也再排一次）
+      const sorted = [...items].sort((a,b) => String(b.sentAt||'').localeCompare(String(a.sentAt||'')));
+
+      const rows = sorted.map((m, idx) => {
+        const t = m.sentAt ? new Date(m.sentAt).toLocaleString() : '';
+        const code = escapeHtml(m.code || '');
+        return `
+          <tr>
+            <td style="width:60px;">${idx+1}</td>
+            <td style="width:200px;">${escapeHtml(t)}</td>
+            <td style="width:140px;"><span class="pill">${code}</span></td>
+          </tr>
+        `;
+      }).join('');
+
+      container.innerHTML = `
+        <p class="muted">共 <b>${sorted.length}</b> 条（按时间倒序）</p>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>发送时间</th>
+              <th>验证码</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    $('btn')。addEventListener('click', async () => {
       setErr('');
-      showBox(false);
+      $('result').innerHTML = '';
 
       try{
         const { email, client_id, refresh_token } = parseLine($('line').value.trim());
@@ -81,7 +120,6 @@
           body: JSON.stringify({ email, client_id, refresh_token, maxPerBox })
         }, 25000);
 
-        // 后端返回的是“数组”，不是对象
         const data = await resp.json().catch(() => null);
 
         if (!resp.ok) {
@@ -90,18 +128,8 @@
           return;
         }
 
-        if (!Array.isArray(data) || data.length === 0) {
-          setStatus('没有匹配到验证码邮件');
-          setErr('');
-          return;
-        }
-
-        // 取最新一封（你后端已按时间倒序排序的话，取 data[0]）
-        const latest = data[0];
-        $('code').textContent = latest.code || '';
-        $('time').textContent = latest.sentAt ? ('发送时间：' + new Date(latest.sentAt).toLocaleString()) : '';
-        showBox(true);
         setStatus('完成');
+        renderTable(data);
       } catch(e){
         setStatus('出错');
         setErr(e?.name === 'AbortError' ? '请求超时（前端 25 秒）' : (e?.message || String(e)));
