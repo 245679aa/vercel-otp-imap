@@ -3,9 +3,9 @@ import { simpleParser } from 'mailparser';
 
 async function getAccessToken(clientId, refreshToken) {
   const params = new URLSearchParams();
-  params.append('client_id', clientId);
-  params.append('grant_type', 'refresh_token');
-  params.append('refresh_token', refreshToken);
+  params.set('client_id', clientId);
+  params.set('grant_type', 'refresh_token');
+  params.set('refresh_token', refreshToken);
 
   const response = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
     method: 'POST',
@@ -32,7 +32,11 @@ async function listSendcodeMails(email, accessToken, maxPerBox = 100) {
     host: 'outlook.office365.com',
     port: 993,
     secure: true,
-    auth: { user: email, accessToken, method: 'XOAUTH2' },
+    auth: {
+      user: email,
+      accessToken: accessToken,
+      method: 'XOAUTH2'
+    },
     logger: false
   });
 
@@ -47,24 +51,24 @@ async function listSendcodeMails(email, accessToken, maxPerBox = 100) {
 
         for (const uid of uids) {
           const fetchRes = await client.fetchOne(uid, { source: true, envelope: true });
-          if (!fetchRes?.source) continue;
+          if (!fetchRes || !fetchRes.source) continue;
 
           const parsed = await simpleParser(fetchRes.source);
           const code = extractOtp(parsed.text || parsed.html);
           if (!code) continue;
 
           results.push({
-            subject: fetchRes.envelope.subject,
-            from: parsed.from?.text,
+            subject: fetchRes.envelope.subject || '',
+            from: parsed.from?.text || '',
             sentAt: parsed.date ? parsed.date.toISOString() : null,
             code: code
           });
         }
       } catch (e) {
-        // Skip box errors
+        // Skip box if inaccessible
       }
     }
-    return results.sort((a, b) => b.sentAt.localeCompare(a.sentAt));
+    return results.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
   } finally {
     await client.logout();
   }
@@ -75,7 +79,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  const { email, client_id, refresh_token, maxPerBox = 50 } = req.body;
+  const { email, client_id, refresh_token, maxPerBox = 50 } = req.body || {};
   if (!email || !client_id || !refresh_token) {
     return res.status(400).json({ error: 'Missing parameters' });
   }
@@ -85,6 +89,9 @@ export default async function handler(req, res) {
     const data = await listSendcodeMails(email, token, Number(maxPerBox));
     res.status(200).json({ ok: true, data });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    res.status(500).json({ 
+      ok: false, 
+      error: err.message || 'Internal Server Error'
+    });
   }
 }
