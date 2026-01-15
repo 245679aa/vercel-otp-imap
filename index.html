@@ -21,7 +21,7 @@
 <body>
   <h2>全部验证码 + 时间列表</h2>
 
-  <p class="muted">输入格式：完整内容</code></p> 
+  <p class="muted">输入格式：完整内容</p>
   <textarea id="line" spellcheck="false"></textarea>
 
   <div class="row">
@@ -78,11 +78,13 @@
       const rows = sorted.map((m, idx) => {
         const t = m.sentAt ? new Date(m.sentAt).toLocaleString() : '';
         const code = escapeHtml(m.code || '');
+        const subject = escapeHtml(m.subject || '');
         return `
           <tr>
             <td style="width:60px;">${idx+1}</td>
             <td style="width:200px;">${escapeHtml(t)}</td>
             <td style="width:140px;"><span class="pill">${code}</span></td>
+            <td>${subject}</td>
           </tr>
         `;
       }).join('');
@@ -95,6 +97,7 @@
               <th>#</th>
               <th>发送时间</th>
               <th>验证码</th>
+              <th>邮件标题</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
