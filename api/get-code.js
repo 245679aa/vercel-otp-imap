@@ -1,120 +1,169 @@
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 
-async function getAccessToken(clientId, refreshToken) {
-  const params = new URLSearchParams();
-  params.set('client_id', clientId);
-  params.set('grant_type', 'refresh_token');
-  params.set('refresh_token', refreshToken);
+// 获取 access token
+async function getAccessToken(client_id, refresh_token) {
+  const form = new URLSearchParams();
+  form.set('client_id', client_id);
+  form.set('grant_type', 'refresh_token');
+  form.set('refresh_token', refresh_token);
 
-  const response = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+  const resp = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: params
+    body: form
   });
 
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.error_description || 'Auth Failed');
+  const txt = await resp.text();
+  let json = {};
+  try { json = JSON.parse(txt); } catch { /* ignore */ }
+
+  if (!resp.ok) {
+    const err = new Error('获取 access_token 失败');
+    err.details = Object.keys(json || {}).length ? json : { raw: txt };
+    throw err;
   }
-  return data.access_token;
+
+  if (!json.access_token) {
+    const err = new Error('响应里没有 access_token');
+    err.details = json;
+    throw err;
+  }
+
+  return json.access_token;
 }
 
+// 提取验证码
 function extractOtp(text) {
   if (!text) return null;
-  // 匹配 4-8 位纯数字验证码，适应更多场景
-  const match = text.替换(/<[^>]+>/g, ' ').match(/\b(\d{4,8})\b/);
-  return match ? match[1] : null;
+
+  const candidates = [
+    text,
+    text.replace(/<[^>]+>/g, ' ') // 去掉 HTML 标签
+  ];
+
+  const patterns = [
+    /验证码(?:为|是)?\s*[:：]?\s*(\d{6})/,
+    /\b(\d{6})\b/
+  ];
+
+  for (const t of candidates) {
+    for (const re of patterns) {
+      const m = t.match(re);
+      if (m) return m[1];
+    }
+  }
+  return null;
 }
 
-async function listSendcodeMails(email, accessToken, maxPerBox = 50) {
+// 提取邮件的发送时间
+function toIsoOrNull(d) {
+  try {
+    if (!d) return null;
+    const dt = (d instanceof Date) ? d : new Date(d);
+    if (isNaN(dt.getTime())) return null;
+    return dt.toISOString();
+  } catch {
+    return null;
+  }
+}
+
+// 判断标题是否包含 TOFAI（不区分大小写）
+function subjectHasTOFAI(subject) {
+  if (!subject) return false;
+  return subject.toLowerCase().includes('tofai');
+}
+
+// 列出符合条件的邮件（发送时间和验证码）
+// ✅ 改为：标题包含 TOFAI
+async function listTOFAIMails(email, accessToken, { maxPerBox = 200 } = {}) {
   const client = new ImapFlow({
     host: 'outlook.office365.com',
     port: 993,
     secure: true,
     auth: {
       user: email,
-      accessToken: accessToken,
+      accessToken,
       method: 'XOAUTH2'
     },
-    logger: false // 如果还是获取不到，可以改为 console 查看底层通讯
+    logger: false
   });
 
+  const mailboxes = ['Junk', 'INBOX'];
   const results = [];
+
   try {
     await client.connect();
 
-    // 遍历常见的文件夹名称
-    const targetBoxes = ['INBOX', 'Junk', 'Archive'];
-    
-    for (const boxName of targetBoxes) {
+    for (const box of mailboxes) {
       try {
-        let mailbox = await client.mailboxOpen(boxName);
-        if (!mailbox) continue;
+        await client.mailboxOpen(box);
 
-        // 优化搜索：搜索标题包含“码”或“Code”的邮件，扩大搜索面
-        // 注意：部分服务器对中文搜索支持有限，这里使用 OR 条件
-        const searchResult = await client.search({
-          or: [
-            { subject: '验证码' },
-            { subject: 'code' },
-            { subject: 'verification' }
-          ]
-        });
-
-        const uids = Array.from(searchResult).slice(-maxPerBox).reverse();
+        const uidsAll = await client.search({ all: true });
+        const uids = uidsAll.slice(-maxPerBox).reverse();
 
         for (const uid of uids) {
-          const fetchRes = await client.fetchOne(uid, { source: true, envelope: true });
-          if (!fetchRes || !fetchRes.source) continue;
+          const msg = await client.fetchOne(uid, { source: true });
+          if (!msg?.source) continue;
 
-          const parsed = await simpleParser(fetchRes.source);
+          const parsed = await simpleParser(msg.source);
+
+          // ✅ 条件：标题包含 TOFAI
+          const subject = parsed.subject || '';
+          if (!subjectHasTOFAI(subject)) continue;
+
+          // 提取验证码
           const code = extractOtp(parsed.text || parsed.html);
-          
-          if (code) {
-            results.push({
-              subject: fetchRes.envelope.subject || '',
-              from: parsed.from?.text || '',
-              sentAt: parsed.date ? parsed.date.toISOString() : null,
-              code: code
-            });
-          }
+          if (!code) continue;
+
+          // 提取发送时间
+          const sentAt = toIsoOrNull(parsed.date) || toIsoOrNull(parsed.headers?.get?.('date'));
+
+          results.push({
+            sentAt,
+            code
+          });
         }
-      } catch (e) {
-        // 忽略单个文件夹打开失败的情况
+      } catch {
+        // 文件夹读取失败时跳过
       }
     }
-    
-    // 按时间排序
-    return results.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
+
+    // 按发送时间倒序排列（最新的在前）
+    results.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
+
+    return results;
   } finally {
-    await client.logout();
+    try { await client.logout(); } catch {}
   }
 }
 
+// API 请求处理
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method Not Allowed' });
+    res.status(405).json({ ok: false, error: 'Method Not Allowed' });
+    return;
   }
 
-  const { email, client_id, refresh_token, maxPerBox = 50 } = req.body || {};
+  const { email, client_id, refresh_token, maxPerBox = 200 } = req.body || {};
   if (!email || !client_id || !refresh_token) {
-    return res.status(400).json({ error: 'Missing parameters' });
+    res.status(400).json({ ok: false, error: '缺少参数：email / client_id / refresh_token' });
+    return;
   }
+
+  const max = Math.max(10, Math.min(2000, Number(maxPerBox) || 200));
 
   try {
-    const token = await getAccessToken(client_id, refresh_token);
-    const data = await listSendcodeMails(email, token, Number(maxPerBox));
-    
-    res.status(200).json({ 
-      ok: true, 
-      count: data.length,
-      data: data 
-    });
-  } catch (err) {
-    res.status(500).json({ 
-      ok: false, 
-      error: err.message 
+    const accessToken = await getAccessToken(client_id, refresh_token);
+    const mails = await listTOFAIMails(email, accessToken, { maxPerBox: max });
+
+    // 返回邮件发送时间和验证码
+    res.status(200).json(mails);
+  } catch (e) {
+    res.status(500).json({
+      ok: false,
+      error: e?.message || String(e),
+      details: e?.details || null
     });
   }
 }
