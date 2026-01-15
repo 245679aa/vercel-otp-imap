@@ -1,7 +1,9 @@
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 
-// 获取 access token
+/**
+ * 获取 Microsoft OAuth2 Access Token
+ */
 async function getAccessToken(client_id, refresh_token) {
   const form = new URLSearchParams();
   form.set('client_id', client_id);
@@ -33,30 +35,34 @@ async function getAccessToken(client_id, refresh_token) {
   return json.access_token;
 }
 
-// 提取验证码
+/**
+ * 从文本中提取 6 位数字验证码
+ */
 function extractOtp(text) {
   if (!text) return null;
 
   const candidates = [
     text,
-    text.replace(/<[^>]+>/g, ' ') // 去掉 HTML 标签
+    text.replace(/<[^>]+>/g, ' ') // 过滤 HTML 标签
   ];
 
   const patterns = [
-    /验证码(?:为|是)?\s*[:：]?\s*(\d{6})/,
-    /\b(\d{6})\b/
+    /验证码(?:为|是)?\s*[:：]?\s*(\d{6})/, // 匹配“验证码是123456”
+    /\b(\d{6})\b/                           // 匹配任意独立的6位数字
   ];
 
   for (const t of candidates) {
     for (const re of patterns) {
       const m = t.match(re);
-      if (m) return m[1]; // 返回找到的验证码
+      if (m) return m[1];
     }
   }
   return null;
 }
 
-// 提取邮件的发送时间
+/**
+ * 格式化日期
+ */
 function toIsoOrNull(d) {
   try {
     if (!d) return null;
@@ -68,7 +74,9 @@ function toIsoOrNull(d) {
   }
 }
 
-// 列出符合条件的邮件（发送时间和验证码）
+/**
+ * 核心逻辑：获取标题包含“验证码”的邮件
+ */
 async function listSendcodeMails(email, accessToken, { maxPerBox = 200 } = {}) {
   const client = new ImapFlow({
     host: 'outlook.office365.com',
@@ -82,7 +90,8 @@ async function listSendcodeMails(email, accessToken, { maxPerBox = 200 } = {}) {
     logger: false
   });
 
-  const mailboxes = ['Junk', 'INBOX'];
+  // 通常验证码可能在收件箱或垃圾箱
+  const mailboxes = ['INBOX', 'Junk'];
   const results = [];
 
   try {
@@ -92,17 +101,20 @@ async function listSendcodeMails(email, accessToken, { maxPerBox = 200 } = {}) {
       try {
         await client.mailboxOpen(box);
 
-        const uidsAll = await client.search({ all: true });
-        const uids = uidsAll.slice(-maxPerBox).reverse(); // 拉最近的 maxPerBox 封邮件
+        // 使用 IMAP SEARCH 指令在服务器端按标题过滤，极大提高性能
+        const uidsAll = await client.search({ subject: '验证码' });
+        
+        // 截取最近的邮件（从后往前取）
+        const uids = uidsAll.slice(-maxPerBox).reverse();
 
         for (const uid of uids) {
-          const msg = await client.fetchOne(uid, { source: true });
+          // fetchOne 时请求 source (解析正文) 和 envelope (获取标题)
+          const msg = await client.fetchOne(uid, { source: true, envelope: true });
           if (!msg?.source) continue;
 
+          // 解析邮件内容
           const parsed = await simpleParser(msg.source);
-          const fromLower = (parsed.from?.text || '').toLowerCase();
-          if (!fromLower.includes('sendcode@alphasmtp.verifycode.link')) continue;
-
+          
           // 提取验证码
           const code = extractOtp(parsed.text || parsed.html);
           if (!code) continue;
@@ -111,16 +123,19 @@ async function listSendcodeMails(email, accessToken, { maxPerBox = 200 } = {}) {
           const sentAt = toIsoOrNull(parsed.date) || toIsoOrNull(parsed.headers?.get?.('date'));
 
           results.push({
-            sentAt, // 发送时间
-            code    // 验证码
+            subject: msg.envelope?.subject || '', // 邮件标题
+            from: parsed.from?.text || '',        // 发件人
+            sentAt,                               // 时间
+            code                                  // 验证码
           });
         }
-      } catch {
-        // 文件夹读取失败时跳过
+      } catch (boxErr) {
+        // 某个文件夹不可读取时跳过，继续下一个
+        console.error(`Folder ${box} error:`, boxErr.message);
       }
     }
 
-    // 按发送时间倒序排列（最新的在前）
+    // 全局按时间倒序排列
     results.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
 
     return results;
@@ -129,27 +144,34 @@ async function listSendcodeMails(email, accessToken, { maxPerBox = 200 } = {}) {
   }
 }
 
-// API 请求处理
+/**
+ * API 接口入口
+ */
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.status(405).json({ ok: false, error: 'Method Not Allowed' });
     return;
   }
 
-  const { email, client_id, refresh_token, maxPerBox = 200 } = req.body || {};
+  const { email, client_id, refresh_token, maxPerBox = 100 } = req.body || {};
+  
   if (!email || !client_id || !refresh_token) {
-    res.status(400).json({ ok: false, error: '缺少参数：email / client_id / refresh_token' });
+    res.status(400).json({ ok: false, error: '缺少必要参数' });
     return;
   }
 
-  const max = Math.max(10, Math.min(2000, Number(maxPerBox) || 200));
+  // 限制单次查询数量，防止超时
+  const max = Math.max(1, Math.min(500, Number(maxPerBox) || 100));
 
   try {
     const accessToken = await getAccessToken(client_id, refresh_token);
     const mails = await listSendcodeMails(email, accessToken, { maxPerBox: max });
 
-    // 返回邮件发送时间和验证码
-    res.status(200).json(mails);
+    res.status(200).json({
+      ok: true,
+      count: mails.length,
+      data: mails
+    });
   } catch (e) {
     res.status(500).json({
       ok: false,
