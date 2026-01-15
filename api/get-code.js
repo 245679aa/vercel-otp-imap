@@ -22,12 +22,12 @@ async function getAccessToken(clientId, refreshToken) {
 
 function extractOtp(text) {
   if (!text) return null;
-  const cleanText = text.replace(/<[^>]+>/g, ' ');
-  const match = cleanText.match(/\b(\d{6})\b/);
+  // 匹配 4-8 位纯数字验证码，适应更多场景
+  const match = text.替换(/<[^>]+>/g, ' ').match(/\b(\d{4,8})\b/);
   return match ? match[1] : null;
 }
 
-async function listSendcodeMails(email, accessToken, maxPerBox = 100) {
+async function listSendcodeMails(email, accessToken, maxPerBox = 50) {
   const client = new ImapFlow({
     host: 'outlook.office365.com',
     port: 993,
@@ -37,16 +37,31 @@ async function listSendcodeMails(email, accessToken, maxPerBox = 100) {
       accessToken: accessToken,
       method: 'XOAUTH2'
     },
-    logger: false
+    logger: false // 如果还是获取不到，可以改为 console 查看底层通讯
   });
 
   const results = [];
   try {
     await client.connect();
-    for (const box of ['INBOX', 'Junk']) {
+
+    // 遍历常见的文件夹名称
+    const targetBoxes = ['INBOX', 'Junk', 'Archive'];
+    
+    for (const boxName of targetBoxes) {
       try {
-        await client.mailboxOpen(box);
-        const searchResult = await client.search({ subject: '验证码' });
+        let mailbox = await client.mailboxOpen(boxName);
+        if (!mailbox) continue;
+
+        // 优化搜索：搜索标题包含“码”或“Code”的邮件，扩大搜索面
+        // 注意：部分服务器对中文搜索支持有限，这里使用 OR 条件
+        const searchResult = await client.search({
+          or: [
+            { subject: '验证码' },
+            { subject: 'code' },
+            { subject: 'verification' }
+          ]
+        });
+
         const uids = Array.from(searchResult).slice(-maxPerBox).reverse();
 
         for (const uid of uids) {
@@ -55,19 +70,22 @@ async function listSendcodeMails(email, accessToken, maxPerBox = 100) {
 
           const parsed = await simpleParser(fetchRes.source);
           const code = extractOtp(parsed.text || parsed.html);
-          if (!code) continue;
-
-          results.push({
-            subject: fetchRes.envelope.subject || '',
-            from: parsed.from?.text || '',
-            sentAt: parsed.date ? parsed.date.toISOString() : null,
-            code: code
-          });
+          
+          if (code) {
+            results.push({
+              subject: fetchRes.envelope.subject || '',
+              from: parsed.from?.text || '',
+              sentAt: parsed.date ? parsed.date.toISOString() : null,
+              code: code
+            });
+          }
         }
       } catch (e) {
-        // Skip box if inaccessible
+        // 忽略单个文件夹打开失败的情况
       }
     }
+    
+    // 按时间排序
     return results.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
   } finally {
     await client.logout();
@@ -87,11 +105,16 @@ export default async function handler(req, res) {
   try {
     const token = await getAccessToken(client_id, refresh_token);
     const data = await listSendcodeMails(email, token, Number(maxPerBox));
-    res.status(200).json({ ok: true, data });
+    
+    res.status(200).json({ 
+      ok: true, 
+      count: data.length,
+      data: data 
+    });
   } catch (err) {
     res.status(500).json({ 
       ok: false, 
-      error: err.message || 'Internal Server Error'
+      error: err.message 
     });
   }
 }
