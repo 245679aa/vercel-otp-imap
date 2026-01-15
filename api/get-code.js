@@ -68,14 +68,13 @@ function toIsoOrNull(d) {
   }
 }
 
-// 判断标题是否包含 TOFAI（不区分大小写）
+// 标题包含 TOFAI（不区分大小写）
 function subjectHasTOFAI(subject) {
   if (!subject) return false;
   return subject.toLowerCase().includes('tofai');
 }
 
-// 列出符合条件的邮件（发送时间和验证码）
-// ✅ 改为：标题包含 TOFAI
+// 列出符合条件的邮件（发送时间、验证码、标题）
 async function listTOFAIMails(email, accessToken, { maxPerBox = 200 } = {}) {
   const client = new ImapFlow({
     host: 'outlook.office365.com',
@@ -100,7 +99,7 @@ async function listTOFAIMails(email, accessToken, { maxPerBox = 200 } = {}) {
         await client.mailboxOpen(box);
 
         const uidsAll = await client.search({ all: true });
-        const uids = uidsAll.slice(-maxPerBox).reverse();
+        const uids = uidsAll.slice(-maxPerBox).reverse(); // 最近 maxPerBox 封
 
         for (const uid of uids) {
           const msg = await client.fetchOne(uid, { source: true });
@@ -108,20 +107,23 @@ async function listTOFAIMails(email, accessToken, { maxPerBox = 200 } = {}) {
 
           const parsed = await simpleParser(msg.source);
 
-          // ✅ 条件：标题包含 TOFAI
+          // ✅ 过滤：标题包含 TOFAI
           const subject = parsed.subject || '';
           if (!subjectHasTOFAI(subject)) continue;
 
-          // 提取验证码
+          // ✅ 提取验证码（正文 text/html）
           const code = extractOtp(parsed.text || parsed.html);
           if (!code) continue;
 
-          // 提取发送时间
-          const sentAt = toIsoOrNull(parsed.date) || toIsoOrNull(parsed.headers?.get?.('date'));
+          // ✅ 发送时间
+          const sentAt =
+            toIsoOrNull(parsed.date) ||
+            toIsoOrNull(parsed.headers?.get?.('date'));
 
           results.push({
             sentAt,
-            code
+            code,
+            subject
           });
         }
       } catch {
@@ -129,8 +131,8 @@ async function listTOFAIMails(email, accessToken, { maxPerBox = 200 } = {}) {
       }
     }
 
-    // 按发送时间倒序排列（最新的在前）
-    results.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
+    // 最新在前
+    results.sort((a, b) => String(b.sentAt || '').localeCompare(String(a.sentAt || '')));
 
     return results;
   } finally {
@@ -157,7 +159,7 @@ export default async function handler(req, res) {
     const accessToken = await getAccessToken(client_id, refresh_token);
     const mails = await listTOFAIMails(email, accessToken, { maxPerBox: max });
 
-    // 返回邮件发送时间和验证码
+    // ✅ 直接返回数组（前端 renderTable(data) 能用）
     res.status(200).json(mails);
   } catch (e) {
     res.status(500).json({
